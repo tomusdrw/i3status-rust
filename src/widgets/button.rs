@@ -1,6 +1,6 @@
 use super::super::widget::I3BarWidget;
 use crate::config::Config;
-use crate::widget::State;
+use crate::widget::{State, BaseConfig};
 use serde_json::value::Value;
 
 #[derive(Clone, Debug)]
@@ -12,6 +12,7 @@ pub struct ButtonWidget {
     rendered: Value,
     cached_output: Option<String>,
     config: Config,
+    base_config: BaseConfig,
 }
 
 impl ButtonWidget {
@@ -31,6 +32,7 @@ impl ButtonWidget {
             }),
             config,
             cached_output: None,
+            base_config: Default::default(),
         }
     }
 
@@ -54,6 +56,12 @@ impl ButtonWidget {
 
     pub fn with_state(mut self, state: State) -> Self {
         self.state = state;
+        self.update();
+        self
+    }
+
+    pub fn with_base_config(mut self, base: BaseConfig) -> Self {
+        self.base_config = base;
         self.update();
         self
     }
@@ -85,8 +93,9 @@ impl ButtonWidget {
             "separator_block_width": 0,
             "background": key_bg,
             "color": key_fg,
-            "markup": "pango"
+            "markup": "pango",
         });
+        self.base_config.update(&mut self.rendered);
 
         self.cached_output = Some(self.rendered.to_string());
     }

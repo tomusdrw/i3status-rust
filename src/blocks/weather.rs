@@ -13,7 +13,7 @@ use crate::errors::*;
 use crate::input::{I3BarEvent, MouseButton};
 use crate::scheduler::Task;
 use crate::util::FormatTemplate;
-use crate::widget::I3BarWidget;
+use crate::widget::{I3BarWidget, BaseConfig};
 use crate::widgets::button::ButtonWidget;
 
 const OPENWEATHERMAP_API_KEY_ENV: &str = "OPENWEATHERMAP_API_KEY";
@@ -210,6 +210,8 @@ pub struct WeatherConfig {
     #[serde(default = "WeatherConfig::default_format")]
     pub format: String,
     pub service: WeatherService,
+    #[serde(flatten)]
+    pub base: BaseConfig,
 }
 
 impl WeatherConfig {
@@ -232,12 +234,13 @@ impl ConfigBlock for Weather {
     ) -> Result<Self> {
         let id = Uuid::new_v4().simple().to_string();
         Ok(Weather {
-            id: id.clone(),
-            weather: ButtonWidget::new(config, &id),
+            weather: ButtonWidget::new(config, &id)
+                .with_base_config(block_config.base),
             format: block_config.format,
             weather_keys: HashMap::new(),
             service: block_config.service,
             update_interval: block_config.interval,
+            id,
         })
     }
 }

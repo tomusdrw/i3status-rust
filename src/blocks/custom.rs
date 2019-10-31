@@ -11,7 +11,7 @@ use crate::de::deserialize_duration;
 use crate::errors::*;
 use crate::input::I3BarEvent;
 use crate::scheduler::Task;
-use crate::widget::I3BarWidget;
+use crate::widget::{I3BarWidget, BaseConfig};
 use crate::widgets::button::ButtonWidget;
 
 use uuid::Uuid;
@@ -44,6 +44,9 @@ pub struct CustomConfig {
 
     /// Commands to execute and change when the button is clicked
     pub cycle: Option<Vec<String>>,
+
+    #[serde(flatten)]
+    pub base: BaseConfig,
 }
 
 impl CustomConfig {
@@ -56,16 +59,17 @@ impl ConfigBlock for Custom {
     type Config = CustomConfig;
 
     fn new(block_config: Self::Config, config: Config, tx: Sender<Task>) -> Result<Self> {
+        let id = Uuid::new_v4().simple().to_string();
         let mut custom = Custom {
-            id: Uuid::new_v4().simple().to_string(),
             update_interval: block_config.interval,
-            output: ButtonWidget::new(config.clone(), ""),
+            output: ButtonWidget::new(config, &id)
+                .with_base_config(block_config.base),
             command: None,
             on_click: None,
             cycle: None,
             tx_update_request: tx,
+            id,
         };
-        custom.output = ButtonWidget::new(config, &custom.id);
 
         if let Some(on_click) = block_config.on_click {
             custom.on_click = Some(on_click.to_string())

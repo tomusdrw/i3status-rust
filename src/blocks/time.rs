@@ -7,7 +7,7 @@ use crate::errors::*;
 use crate::input::I3BarEvent;
 use crate::scheduler::Task;
 use crate::subprocess::{parse_command, spawn_child_async};
-use crate::widget::I3BarWidget;
+use crate::widget::{I3BarWidget, BaseConfig};
 use crate::widgets::button::ButtonWidget;
 use chrono::offset::{Local, Utc};
 use chrono_tz::Tz;
@@ -45,6 +45,9 @@ pub struct TimeConfig {
         deserialize_with = "deserialize_timezone"
     )]
     pub timezone: Option<Tz>,
+
+    #[serde(flatten)]
+    pub base: BaseConfig,
 }
 
 impl TimeConfig {
@@ -79,7 +82,8 @@ impl ConfigBlock for Time {
             format: block_config.format,
             time: ButtonWidget::new(config, i.as_str())
                 .with_text("")
-                .with_icon("time"),
+                .with_icon("time")
+                .with_base_config(block_config.base),
             update_interval: block_config.interval,
             on_click: block_config.on_click,
             timezone: block_config.timezone,
