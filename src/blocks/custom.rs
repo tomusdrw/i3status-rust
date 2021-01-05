@@ -231,8 +231,10 @@ impl Block for Custom {
         let mut update = false;
 
         if let Some(ref on_click) = self.on_click {
-            spawn_child_async(&self.shell, &["-c", on_click]).ok();
-            update = true;
+            if event.button == crate::input::MouseButton::Left {
+                spawn_child_async(&self.shell, &["-c", on_click]).ok();
+                update = true;
+            }
         }
 
         if let Some(ref mut cycle) = self.cycle {
