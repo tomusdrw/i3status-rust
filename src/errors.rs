@@ -106,16 +106,14 @@ impl fmt::Debug for Error {
 impl StdError for Error {
     fn description(&self) -> &str {
         match *self {
-            BlockError(_, _) => "Block error occured in block '{}'",
-            ConfigurationError(_, _) => "Configuration error occured",
-            InternalError(_, _, _) => "Internal error occured",
+            BlockError(_, _) => "Block error occurred in block '{}'",
+            ConfigurationError(_, _) => "Configuration error occurred",
+            InternalError(_, _, _) => "Internal error occurred",
         }
     }
 
     fn cause(&self) -> Option<&dyn StdError> {
-        match *self {
-            _ => None,
-        }
+        None
     }
 }
 
@@ -124,6 +122,6 @@ where
     T: Send,
 {
     fn from(_err: ::crossbeam_channel::SendError<T>) -> Error {
-        InternalError("unknown".to_owned(), format!("send error"), None)
+        InternalError("unknown".to_string(), "send error".to_string(), None)
     }
 }

@@ -1,26 +1,7 @@
 #[macro_use]
-extern crate lazy_static;
-#[macro_use]
-extern crate serde_derive;
-extern crate serde;
-#[macro_use]
 extern crate serde_json;
-#[macro_use]
-extern crate crossbeam_channel;
-extern crate chrono;
-extern crate chrono_tz;
-extern crate clap;
-extern crate dbus;
-extern crate inotify;
 #[cfg(feature = "pulseaudio")]
-extern crate libpulse_binding as pulse;
-extern crate maildir;
-#[cfg(feature = "notmuch")]
-extern crate notmuch;
-extern crate num;
-extern crate regex;
-extern crate toml;
-extern crate uuid;
+use libpulse_binding as pulse;
 
 #[macro_use]
 mod de;
@@ -32,57 +13,72 @@ mod errors;
 mod icons;
 mod input;
 mod scheduler;
+mod signals;
 mod subprocess;
 mod themes;
 mod widget;
 mod widgets;
 
 #[cfg(feature = "profiling")]
-extern crate cpuprofiler;
-#[cfg(feature = "profiling")]
 use cpuprofiler::PROFILER;
-#[cfg(feature = "profiling")]
-extern crate progress;
 
 use std::collections::HashMap;
 use std::ops::DerefMut;
 use std::time::Duration;
 
-use crate::blocks::Block;
+use clap::{crate_authors, crate_description, App, Arg, ArgMatches};
+use crossbeam_channel::{select, Receiver, Sender};
 
 use crate::blocks::create_block;
-use crate::config::Config;
+use crate::blocks::Block;
+use crate::config::{load_config, Config};
 use crate::errors::*;
 use crate::input::{process_events, I3BarEvent};
 use crate::scheduler::{Task, UpdateScheduler};
+use crate::signals::process_signals;
 use crate::widget::{I3BarWidget, State};
 use crate::widgets::text::TextWidget;
 
-use crate::util::deserialize_file;
-
-use self::clap::{App, Arg, ArgMatches};
-use crossbeam_channel::{Receiver, Sender};
-
 fn main() {
-    let mut builder = App::new("i3status-rs")
-        .version("0.11.0")
-        .author(
-            "Kai Greshake <development@kai-greshake.de>, Contributors on GitHub: \\
-             https://github.com/greshake/i3status-rust/graphs/contributors",
+    let ver = if env!("GIT_COMMIT_HASH").is_empty() || env!("GIT_COMMIT_DATE").is_empty() {
+        env!("CARGO_PKG_VERSION").to_string()
+    } else {
+        format!(
+            "{} (commit {} {})",
+            env!("CARGO_PKG_VERSION"),
+            env!("GIT_COMMIT_HASH"),
+            env!("GIT_COMMIT_DATE")
         )
-        .about("Replacement for i3status for Linux, written in Rust")
+    };
+    let mut builder = App::new("i3status-rs")
+        .version(&*ver)
+        .author(crate_authors!())
+        .about(crate_description!())
         .arg(
             Arg::with_name("config")
                 .value_name("CONFIG_FILE")
-                .help("sets a toml config file")
-                .required(true)
+                .help("Sets a toml config file")
+                .required(false)
                 .index(1),
         )
         .arg(
             Arg::with_name("exit-on-error")
-                .help("exit on error rather than printing the error to i3bar and keep running")
+                .help("Exit rather than printing errors to i3bar and continuing")
                 .long("exit-on-error")
                 .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("never-pause")
+                .help("Ignore any attempts by i3 to pause the bar when hidden/fullscreen")
+                .long("never-pause")
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("one-shot")
+                .help("Print blocks once and exit")
+                .long("one-shot")
+                .takes_value(false)
+                .hidden(true),
         );
 
     if_debug!({
@@ -91,14 +87,14 @@ fn main() {
                 Arg::with_name("profile")
                     .long("profile")
                     .takes_value(true)
-                    .help("A block to be profiled. Analyze block.profile with pprof"),
+                    .help("A block to be profiled. Creates a `block.profile` file that can be analyzed with `pprof`"),
             )
             .arg(
                 Arg::with_name("profile-runs")
                     .long("profile-runs")
                     .takes_value(true)
                     .default_value("10000")
-                    .help("How many times to execute update when profiling."),
+                    .help("Number of times to execute update when profiling"),
             );
     });
 
@@ -129,13 +125,24 @@ fn main() {
     }
 }
 
-#[allow(unused_mut)] // TODO: Remove when fixed in chan_select
 fn run(matches: &ArgMatches) -> Result<()> {
     // Now we can start to run the i3bar protocol
-    print!("{{\"version\": 1, \"click_events\": true}}\n[");
+    let initialise = if matches.is_present("never-pause") {
+        format!(
+            "\"version\": 1, \"click_events\": true, \"stop_signal\": {}",
+            nix::sys::signal::Signal::SIGCONT as i8
+        )
+    } else {
+        "\"version\": 1, \"click_events\": true".to_string()
+    };
+    print!("{{{}}}\n[", initialise);
 
     // Read & parse the config file
-    let config: Config = deserialize_file(matches.value_of("config").unwrap())?;
+    let config_path = match matches.value_of("config") {
+        Some(config_path) => std::path::PathBuf::from(config_path),
+        None => util::xdg_config_home().join("i3status-rust/config.toml"),
+    };
+    let config = load_config(&config_path)?;
 
     // Update request channel
     let (tx_update_requests, rx_update_requests): (Sender<Task>, Receiver<Task>) =
@@ -147,64 +154,20 @@ fn run(matches: &ArgMatches) -> Result<()> {
             name,
             matches.value_of("profile-runs").unwrap(),
             &config,
-            &tx_update_requests,
+            tx_update_requests,
         )?;
         return Ok(());
     }
 
-    let mut config_alternating_tint = config.clone();
-    {
-        let tint_bg = &config.theme.alternating_tint_bg;
-        config_alternating_tint.theme.idle_bg =
-            util::add_colors(&config_alternating_tint.theme.idle_bg, tint_bg)
-                .configuration_error("can't parse alternative_tint color code")?;
-        config_alternating_tint.theme.info_bg =
-            util::add_colors(&config_alternating_tint.theme.info_bg, tint_bg)
-                .configuration_error("can't parse alternative_tint color code")?;
-        config_alternating_tint.theme.good_bg =
-            util::add_colors(&config_alternating_tint.theme.good_bg, tint_bg)
-                .configuration_error("can't parse alternative_tint color code")?;
-        config_alternating_tint.theme.warning_bg =
-            util::add_colors(&config_alternating_tint.theme.warning_bg, tint_bg)
-                .configuration_error("can't parse alternative_tint color code")?;
-        config_alternating_tint.theme.critical_bg =
-            util::add_colors(&config_alternating_tint.theme.critical_bg, tint_bg)
-                .configuration_error("can't parse alternative_tint color code")?;
-
-        let tint_fg = &config.theme.alternating_tint_fg;
-        config_alternating_tint.theme.idle_fg =
-            util::add_colors(&config_alternating_tint.theme.idle_fg, tint_fg)
-                .configuration_error("can't parse alternative_tint color code")?;
-        config_alternating_tint.theme.info_fg =
-            util::add_colors(&config_alternating_tint.theme.info_fg, tint_fg)
-                .configuration_error("can't parse alternative_tint color code")?;
-        config_alternating_tint.theme.good_fg =
-            util::add_colors(&config_alternating_tint.theme.good_fg, tint_fg)
-                .configuration_error("can't parse alternative_tint color code")?;
-        config_alternating_tint.theme.warning_fg =
-            util::add_colors(&config_alternating_tint.theme.warning_fg, tint_fg)
-                .configuration_error("can't parse alternative_tint color code")?;
-        config_alternating_tint.theme.critical_fg =
-            util::add_colors(&config_alternating_tint.theme.critical_fg, tint_fg)
-                .configuration_error("can't parse alternative_tint color code")?;
-    }
-
-    let mut blocks: Vec<Box<dyn Block>> = Vec::new();
-
-    let mut alternator = false;
     // Initialize the blocks
+    let mut blocks: Vec<Box<dyn Block>> = Vec::new();
     for &(ref block_name, ref block_config) in &config.blocks {
         blocks.push(create_block(
             block_name,
             block_config.clone(),
-            if alternator {
-                config_alternating_tint.clone()
-            } else {
-                config.clone()
-            },
+            config.clone(),
             tx_update_requests.clone(),
         )?);
-        alternator = !alternator;
     }
 
     // We save the order of the blocks here,
@@ -227,10 +190,15 @@ fn run(matches: &ArgMatches) -> Result<()> {
         crossbeam_channel::unbounded();
     process_events(tx_clicks);
 
+    // We wait for signals in a separate thread
+    let (tx_signals, rx_signals): (Sender<i32>, Receiver<i32>) = crossbeam_channel::unbounded();
+    process_signals(tx_signals);
+
     // Time to next update channel.
     // Fires immediately for first updates
     let mut ttnu = crossbeam_channel::after(Duration::from_millis(0));
 
+    let one_shot = matches.is_present("one-shot");
     loop {
         // We use the message passing concept of channel selection
         // to avoid busy wait
@@ -257,18 +225,44 @@ fn run(matches: &ArgMatches) -> Result<()> {
                 // redraw the blocks, state changed
                 util::print_blocks(&order, &block_map, &config)?;
             },
+            // Receive signal events
+            recv(rx_signals) -> res => if let Ok(sig) = res {
+                match sig {
+                    signal_hook::SIGUSR1 => {
+                        //USR1 signal that updates every block in the bar
+                        for block in block_map.values_mut() {
+                            block.update()?;
+                        }
+                        util::print_blocks(&order, &block_map, &config)?;
+                    },
+                    signal_hook::SIGUSR2 => {
+                        //USR2 signal that should reload the config
+                        //TODO not implemented
+                        //unimplemented!("SIGUSR2 is meant to be used to reload the config toml, but this feature is yet not implemented");
+                    },
+                    _ => {
+                        //Real time signal that updates only the blocks listening
+                        //for that signal
+                        for block in block_map.values_mut() {
+                            block.signal(sig)?;
+                        }
+                    },
+                };
+            }
         }
 
         // Set the time-to-next-update timer
-        match scheduler.time_to_next_update() {
-            Some(time) => ttnu = crossbeam_channel::after(time),
-            None => ttnu = crossbeam_channel::after(Duration::from_secs(std::u64::MAX)),
+        if let Some(time) = scheduler.time_to_next_update() {
+            ttnu = crossbeam_channel::after(time)
+        }
+        if one_shot {
+            break Ok(());
         }
     }
 }
 
 #[cfg(feature = "profiling")]
-fn profile(iterations: i32, name: &str, block: &mut Block) {
+fn profile(iterations: i32, name: &str, block: &mut dyn Block) {
     let mut bar = progress::Bar::new();
     println!(
         "Now profiling the {0} block by executing {1} updates.\n \
@@ -299,12 +293,8 @@ fn profile_config(name: &str, runs: &str, config: &Config, update: Sender<Task>)
         .configuration_error("failed to parse --profile-runs as an integer")?;
     for &(ref block_name, ref block_config) in &config.blocks {
         if block_name == name {
-            let mut block = create_block(
-                &block_name,
-                block_config.clone(),
-                config.clone(),
-                update.clone(),
-            )?;
+            let mut block =
+                create_block(&block_name, block_config.clone(), config.clone(), update)?;
             profile(profile_runs, &block_name, block.deref_mut());
             break;
         }
@@ -313,12 +303,7 @@ fn profile_config(name: &str, runs: &str, config: &Config, update: Sender<Task>)
 }
 
 #[cfg(not(feature = "profiling"))]
-fn profile_config(
-    _name: &str,
-    _runs: &str,
-    _config: &Config,
-    _update: &Sender<Task>,
-) -> Result<()> {
+fn profile_config(_name: &str, _runs: &str, _config: &Config, _update: Sender<Task>) -> Result<()> {
     // TODO: Maybe we should just panic! here.
     Err(InternalError(
         "profile".to_string(),
