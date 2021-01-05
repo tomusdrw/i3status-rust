@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use serde::de::value::{Error, StrDeserializer};
 use serde::de::{Deserialize, IntoDeserializer};
-use serde_derive::Deserialize;
+use serde_derive::{Serialize, Deserialize};
 use serde_json::value::Value;
 
 use crate::themes::Theme;

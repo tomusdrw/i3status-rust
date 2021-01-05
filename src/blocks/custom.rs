@@ -97,10 +97,10 @@ impl ConfigBlock for Custom {
     fn new(block_config: Self::Config, config: Config, tx: Sender<Task>) -> Result<Self> {
         let id = pseudo_uuid();
         let mut custom = Custom {
-            id,
             update_interval: block_config.interval,
             output: ButtonWidget::new(config, &id)
                 .with_base_config(block_config.base),
+            id,
             command: None,
             on_click: None,
             cycle: None,

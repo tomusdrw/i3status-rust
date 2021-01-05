@@ -1,5 +1,3 @@
-use serde_json::value::Value;
-
 use super::super::widget::I3BarWidget;
 use crate::config::Config;
 use crate::widget::{State, BaseConfig, Spacing};
